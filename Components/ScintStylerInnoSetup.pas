@@ -1179,6 +1179,22 @@ procedure TInnoSetupStyler.HandleCompilerDirective(const InlineDirective: Boolea
       CommitStyleSqPending(stComment);
   end;
 
+  procedure ConsumeISPPString(const Terminator: AnsiChar);
+  begin
+    while True do begin
+      ConsumeCharsNot([Terminator]);
+      if not ConsumeChar(Terminator) then begin
+        CommitStyleSqPending(stISPPString);
+        Break;
+      end;
+      if not ConsumeChar(Terminator) then begin
+        CommitStyle(stISPPString);
+        Break;
+      end;
+    end;
+
+  end;
+
 const
   ISPPReservedWords: array[0..16] of TScintRawString = (
     'private', 'protected', 'public', 'any', 'int',
@@ -1195,7 +1211,7 @@ var
   S: TScintRawString;
   StartIndex, I: Integer;
   C: AnsiChar;
-  NeedIspp, ForDirectiveExpressionsNext: Boolean;
+  NeedIspp, ForDirectiveExpressionsNext, DoIncludeFileNotationCheck: Boolean;
 begin
   StartIndex := CurIndex;
   if InlineDirective then begin
@@ -1204,19 +1220,25 @@ begin
   end else
     NeedIspp := False; { Might be updated later to True later }
   ForDirectiveExpressionsNext := False;
+  DoIncludeFileNotationCheck := False;
   ConsumeChar('#');
   CommitStyle(stCompilerDirective);
 
   { Directive name or shorthand }
   SkipWhiteSpace;
+  C := CurChar;
   if ConsumeCharIn(ISPPDirectiveShorthands) then begin
+    DoIncludeFileNotationCheck := C = '+'; { We need to check the include file notation  }
     NeedIspp := True;
     FinishDirectiveNameOrShorthand(True); { All shorthands require a parameter }
   end else begin
     S := ConsumeString(ISPPIdentChars);
     for I := Low(ISPPDirectives) to High(ISPPDirectives) do
       if SameRawText(S, ISPPDirectives[I].Name) then begin
-        NeedIspp := not SameRawText(S, 'include'); { Built-in preprocessor only supports '#include' }
+        if SameRawText(S, 'include') then
+          DoIncludeFileNotationCheck := True { See above }
+        else
+          NeedIspp := True; { Built-in preprocessor only supports '#include' }
         ForDirectiveExpressionsNext := SameRawText(S, 'for'); { #for uses ';' as an expressions list separator so we need to remember that ';' doesn't start a comment until the list is done }
         Inc(OpenCount, ISPPDirectives[I].OpenCountChange);
         if OpenCount < 0 then begin
@@ -1234,9 +1256,15 @@ begin
 
   { Rest of the directive }
   SkipWhitespace;
-  if not NeedIspp then
-    NeedIspp := CurChar <> '"'; { Built-in preprocessor requires a '"' quoted string after the '#include' and doesn't support anything else }
   while not EndOfDirective do begin
+    if DoIncludeFileNotationCheck then begin
+      if CurChar <> '"' then begin
+        NeedIspp := True; { Built-in preprocessor requires a '"' quoted string after the '#include' and doesn't support anything else }
+        if CurChar = '<' then { Check for ISPP's special bracket notation for include files }
+          ConsumeISPPString('>'); { Consume now instead of using regular consumption }
+      end;
+      DoIncludeFileNotationCheck := False;
+    end;
     if CurChar in ISPPIdentFirstChars then begin
       S := ConsumeString(ISPPIdentChars);
       for I := Low(ISPPReservedWords) to High(ISPPReservedWords) do
@@ -1288,19 +1316,7 @@ begin
             end;
           end;
         '''', '"':
-          begin
-            while True do begin
-              ConsumeCharsNot([C]);
-              if not ConsumeChar(C) then begin
-                CommitStyleSqPending(stISPPString);
-                Break;
-              end;
-              if not ConsumeChar(C) then begin
-                CommitStyle(stISPPString);
-                Break;
-              end;
-            end;
-          end;
+          ConsumeISPPString(C);
       else
         { Illegal character }
         CommitStyleSq(stSymbol, True);
